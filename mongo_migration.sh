@@ -23,7 +23,7 @@ NETWORK_NAME=${NETWORK_NAME:-"mongo5-network"}
 HOST_PORT_BASE=${HOST_PORT_BASE:-27010}
 CONTAINER_PORT=${CONTAINER_PORT:-27017}
 
-declare -A FCV_VERSIONS=(["6.0"]="docker.io/bitnami/mongodb:6.0" ["7.0"]="docker.io/bitnami/mongodb:7.0")
+declare -A FCV_VERSIONS=(["6.0"]="docker.io/mongo:6.0" ["7.0"]="docker.io/mongo:7.0")
 declare -A container_map
 
 log_info() { echo "[INFO] $1"; }
@@ -36,9 +36,9 @@ fi
 
 start_container() {
     log_info "Starting MongoDB container (Image: $5): $1 on $2"
-    docker run -dt --name "$1" --hostname "$2" --network $NETWORK_NAME \
-        -p "$3:$CONTAINER_PORT" -v "$4:/bitnami/mongodb/data/db:Z" \
-        -e MONGODB_EXTRA_FLAGS="--replSet=$REPL_SET" "$5"
+    docker run -dt --name "$1" --user 1001:1001 --hostname "$2" --network $NETWORK_NAME \
+        -p "$3:$CONTAINER_PORT" -v "$4:/data/db:Z" \
+        "$5" mongod --replSet "$REPL_SET"
 }
 
 wait_for_mongo() {
@@ -51,7 +51,7 @@ wait_for_mongo() {
 
 stop_and_remove_container() {
     local container_name="$1"
-    local timeout="${2:-30}"  # Default timeout is 30 seconds
+    local timeout="${2:-90}"  # Default timeout is 90 seconds
 
     # Print MongoDB logs before shutting down the container
     log_info "Fetching logs for container: $container_name before stopping"
@@ -59,7 +59,7 @@ stop_and_remove_container() {
 
     # Wait for MongoDB to complete its shutdown and replication
     log_info "Stopping container: $container_name with timeout: $timeout seconds"
-    docker stop --time "$timeout" "$container_name"
+    docker stop --timeout "$timeout" "$container_name"
 
     # Display final logs after the stop command (optional)
     log_info "Fetching final logs after stopping container: $container_name"
@@ -116,7 +116,7 @@ wait_for_all_members_ready() {
 
     log_info "Waiting for all replica set members to be ready..."
     while [ "$ready" = false ]; do
-        sleep 10
+        sleep 20
         ready=true
         rs_status=$(docker exec "$primary_container" mongosh --quiet --eval 'JSON.stringify(rs.status())')
         for ((i=0; i<expected_members; i++)); do
@@ -137,7 +137,7 @@ init_replica_set() {
     primary_cname="mongo-0"
     MONGO_HOST=$(construct_hostname "${hostname_array[0]%:*}")
     log_info "converted host for new primary:  $MONGO_HOST"
-    start_container "$primary_cname" "${MONGO_HOST}" "27010" "$NFS_ROOT/mongo7-node-0/data/db" "docker.io/bitnami/mongodb:7.0"
+    start_container "$primary_cname" "${MONGO_HOST}" "27010" "$NFS_ROOT/mongo7-node-0/data/db" "docker.io/mongo:7.0"
     wait_for_mongo "$primary_cname"
 
     # Initialize the replica set with only the primary node
@@ -156,18 +156,20 @@ init_replica_set() {
     for i in $(seq 1 $((${#hostname_array[@]} - 1))); do
         cname="mongo-$i"
         MONGO_HOST=$(construct_hostname "${hostname_array[$i]%:*}")
-        start_container "$cname" "${MONGO_HOST}" "$((HOST_PORT_BASE + i))" "$NFS_ROOT/mongo7-node-$i/data/db" "docker.io/bitnami/mongodb:7.0"
+        start_container "$cname" "${MONGO_HOST}" "$((HOST_PORT_BASE + i))" "$NFS_ROOT/mongo7-node-$i/data/db" "docker.io/mongo:7.0"
         wait_for_mongo "$cname"
     done
 
+
     for i in $(seq 1 $((${#hostname_array[@]} - 1))); do
-        # Add the secondary node to the replica set
+         # Add the secondary nodes to the replica set
         log_info "Adding secondary node to the replica set..."
         MONGO_HOST=$(construct_hostname "${hostname_array[$i]%:*}")
         cname="mongo-$i"
         docker exec "$primary_cname" mongosh --quiet --eval "rs.add('${MONGO_HOST}:27017')"
         log_info "Secondary node added to the replica set."
     done
+
 
     # Wait for all members to be ready
     wait_for_all_members_ready "$primary_cname" "${#hostname_array[@]}"
@@ -188,9 +190,10 @@ init_replica_set() {
 
 # Step 1: Start a temporary container to get replica set info
 log_info "Starting temporary MongoDB container to retrieve replica set info (MongoDB 5.0)"
-docker run -dt --name "mongo-get-host-name" -p 27020:$CONTAINER_PORT \
-    -v "$NFS_ROOT/mongo7-node-0/data/db:/bitnami/mongodb/data/db:Z" \
-    -e MONGODB_EXTRA_FLAGS="--replSet=$REPL_SET" docker.io/bitnami/mongodb:5.0
+
+docker run -dt --name "mongo-get-host-name" --user 1001:1001 -p 27020:$CONTAINER_PORT \
+    -v "$NFS_ROOT/mongo7-node-0/data/db:/data/db:Z" \
+    docker.io/mongo:5.0 mongod --replSet "$REPL_SET"
 
 wait_for_mongo "mongo-get-host-name"
 hostname_array=($(docker exec "mongo-get-host-name" mongosh --quiet --eval "rs.conf();" | sed -n "s/.*host: '\([^']*\)'.*/\1/p"))
@@ -203,7 +206,7 @@ stop_and_remove_container "mongo-get-host-name"
 # Step 2: Start MongoDB containers and map hostnames to container names
 for i in "${!hostname_array[@]}"; do
     cname="mongo-$i"
-    start_container "$cname" "${hostname_array[$i]%%:*}" "$((HOST_PORT_BASE + i))" "$NFS_ROOT/mongo7-node-$i/data/db" "docker.io/bitnami/mongodb:5.0"
+    start_container "$cname" "${hostname_array[$i]%%:*}" "$((HOST_PORT_BASE + i))" "$NFS_ROOT/mongo7-node-$i/data/db" "docker.io/mongo:5.0"
     container_map["${hostname_array[$i]%%:*}"]="$cname"
     wait_for_mongo "$cname"
 done
