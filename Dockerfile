@@ -14,8 +14,8 @@
 
 FROM ubuntu:22.04
 
-ENV MONGO_VERSION 7.0.28
-ENV MONGO_TOOLS_VERSION 7.0.28
+ENV MONGO_VERSION 7.0.39
+ENV MONGO_TOOLS_VERSION 7.0.39
 
 RUN mkdir -p /etc/mongodb
 RUN mkdir -p /data/db /etc/ca
